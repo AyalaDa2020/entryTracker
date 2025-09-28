@@ -55,19 +55,16 @@ jobs:
         id: meta
         run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Pack source as artifact (exclude secrets)
+      - name: Pack source as artifact (git archive)
         run: |
-          tar \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='.env' \
-            -czf src.tar.gz .
+            git config --global --add safe.directory "$PWD"
+            git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
 
       - name: Upload source artifact
         uses: actions/upload-artifact@v4
         with:
           name: src
-          path: src.tar.gz
+          path: /tmp/src.tar.gz
 
   # אריזת האפליקציה כתמונת Docker (tag: latest)
   package_image:
