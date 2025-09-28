@@ -140,7 +140,7 @@ jobs:
         run: docker compose down -v
 
   # פרסום ל-ECR באמצעות OIDC
-publish_ecr:
+  publish_ecr:
   runs-on: ubuntu-latest
   needs: [build_pack, package_image, e2e]   # ← הוספנו build_pack לכאן
   if: github.ref == 'refs/heads/main'
