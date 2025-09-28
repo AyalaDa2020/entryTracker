@@ -141,49 +141,49 @@ jobs:
 
   # פרסום ל-ECR באמצעות OIDC
   publish_ecr:
-  runs-on: ubuntu-latest
-  needs: [build_pack, package_image, e2e]   # ← הוספנו build_pack לכאן
-  if: github.ref == 'refs/heads/main'
-  permissions:
-    id-token: write
-    contents: read
-  env:
-    AWS_REGION: ${{ vars.AWS_REGION }}
-    ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
-    IMAGE_NAME: entrytracker
-    IMAGE_TAG_SHA: ${{ needs.build_pack.outputs.image_tag }}   # עכשיו לא יהיה ריק
-  steps:
-    - name: Download image artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: image_latest
-        path: ./img
+    runs-on: ubuntu-latest
+    needs: [build_pack, package_image, e2e]   # ← הוספנו build_pack לכאן
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      IMAGE_NAME: entrytracker
+      IMAGE_TAG_SHA: ${{ needs.build_pack.outputs.image_tag }}   # עכשיו לא יהיה ריק
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image_latest
+          path: ./img
 
-    - name: Load image (latest)
-      run: docker load -i ./img/image_latest.tar
+      - name: Load image (latest)
+        run: docker load -i ./img/image_latest.tar
 
-    - name: Configure AWS (OIDC)
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ vars.AWS_IAM_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to ECR
-      id: ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Sanity print
-      run: |
-        echo "ECR_REGISTRY=${{ steps.ecr.outputs.registry }}"
-        echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
-        echo "IMAGE_TAG_SHA=${IMAGE_TAG_SHA}"
+      - name: Sanity print
+        run: |
+          echo "ECR_REGISTRY=${{ steps.ecr.outputs.registry }}"
+          echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
+          echo "IMAGE_TAG_SHA=${IMAGE_TAG_SHA}"
 
-    - name: Tag and push (latest + SHA)
-      env:
-        ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-      run: |
-        docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:latest
-        docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
-        docker push $ECR_REGISTRY/${ECR_REPOSITORY}:latest
-        docker push $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
+      - name: Tag and push (latest + SHA)
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:latest
+          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
+          docker push $ECR_REGISTRY/${ECR_REPOSITORY}:latest
+          docker push $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
 
