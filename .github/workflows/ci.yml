@@ -130,42 +130,10 @@ jobs:
           ls -lh ./img
           echo "Package stage complete (image_latest.tar)"
 
-  # ─────────────── publish (push :latest to ECR for e2e) ───────────────
-  publish_ecr_ci:
-    runs-on: ubuntu-latest
-    needs: [build, package]
-    env:
-      AWS_REGION: ap-south-1
-      ECR_IMAGE_URI: 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
-    steps:
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: image_latest
-          path: ./img
-
-      - name: Load local image
-        run: docker load -i ./img/image_latest.tar
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Tag & Push image to ECR (:latest)
-        run: |
-          docker tag entrytracker:latest $ECR_IMAGE_URI
-          docker push $ECR_IMAGE_URI
-
   # ───────────────────────────── e2e ──────────────────────────────
   e2e:
     runs-on: ubuntu-latest
-    needs: [pull, build, unit_test, package, publish_ecr_ci]
+    needs: [pull, build, unit_test, package]
     steps:
       - name: Download source
         uses: actions/download-artifact@v4
@@ -176,31 +144,38 @@ jobs:
       - name: Extract source
         run: tar -xzf ./ci_src/src.tar.gz -C .
 
-      # Login ל-ECR לפני compose (כדי למנוע no basic auth credentials)
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Download built image
+        uses: actions/download-artifact@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
+          name: image_latest
+          path: ./img
 
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Load local image
+        run: docker load -i ./img/image_latest.tar
 
-      # משיכה מפורשת כדי לקבל כשל מהיר אם אין הרשאה/תג
-      - name: Pull web image from ECR
-        run: docker pull 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
+      - name: Sanity: ensure local tag exists
+        run: docker images | grep -E '^entrytracker\s+latest' || (echo "entrytracker:latest not loaded" && exit 1)
 
       - name: Pull public base images (nginx/mysql)
         run: |
           docker pull nginx:1.27-alpine
           docker pull mysql:5.7
 
-      # מרימים את ה-stack — ללא --build
-      - name: Compose up (no build)
+      # ⬇⬇⬇ יצירת קובץ override שמכריח את web לרוץ על התמונה המקומית
+      - name: Create compose override for CI
+        run: |
+          cat > docker-compose.ci.override.yml <<'YML'
+          services:
+            web:
+              image: entrytracker:latest
+          YML
+          echo "---- docker-compose.ci.override.yml ----"
+          cat docker-compose.ci.override.yml
+
+      - name: Compose up (no build, with override)
         env:
           COMPOSE_PROJECT_NAME: entrytracker
-        run: docker compose up -d
+        run: docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml up -d
 
       - name: Wait for web via Nginx (HTTP 200)
         run: |
@@ -216,15 +191,14 @@ jobs:
 
       - name: Compose down
         if: always()
-        run: docker compose down -v
+        run: docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml down -v
 
-      # ───────────────────────────── report ───────────────────────────
       - name: Collect compose logs
         if: always()
         run: |
           mkdir -p reports
-          docker compose ps > reports/compose.ps.txt || true
-          docker compose logs --no-color > reports/compose.log || true
+          docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml ps > reports/compose.ps.txt || true
+          docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml logs --no-color > reports/compose.log || true
 
       - name: Upload reports (artifact)
         if: always()
@@ -232,3 +206,19 @@ jobs:
         with:
           name: ci-reports
           path: reports/
+
+  # ───────────────────────────── report ───────────────────────────
+  report:
+    runs-on: ubuntu-latest
+    needs: [e2e]
+    steps:
+      - name: Download CI reports
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-reports
+          path: ./ci-reports
+
+      - name: Summarize
+        run: |
+          echo "=== CI Reports ==="
+          ls -lh ./ci-reports || true
