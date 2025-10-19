@@ -7,223 +7,223 @@
               branches: [ main ]
 
           jobs:
-            pull:
-              runs-on: ubuntu-latest
-              outputs:
-                src_sha: ${{ steps.meta.outputs.src_sha }}
-              steps:
-                - name: Checkout
-                  uses: actions/checkout@v4
+            name: CI
 
-                - name: Fail if merge-conflict markers exist
-                  run: |
-                    if git grep -nE '^[<=>]{7}'; then
-                      echo "Resolve merge conflicts before running CI."
-                      exit 1
-                    fi
+            on:
+              push:
+                branches: [ main ]
+              pull_request:
+                branches: [ main ]
 
-                - name: Stamp source SHA
-                  id: meta
-                  run: echo "src_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+            jobs:
+              pull:
+                runs-on: ubuntu-latest
+                outputs:
+                  src_sha: ${{ steps.meta.outputs.src_sha }}
+                steps:
+                  - name: Checkout
+                    uses: actions/checkout@v4
 
-                - name: Pack source (git archive)
-                  run: |
-                    git config --global --add safe.directory "$PWD"
-                    git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
+                  - name: Fail if merge-conflict markers exist
+                    run: |
+                      if git grep -nE '^[<=>]{7}'; then
+                        echo "Resolve merge conflicts before running CI."
+                        exit 1
+                      fi
 
-                - name: Upload source artifact
-                  uses: actions/upload-artifact@v4
-                  with:
-                    name: src
-                    path: /tmp/src.tar.gz
+                  - name: Stamp source SHA
+                    id: meta
+                    run: echo "src_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-            build:
-              runs-on: ubuntu-latest
-              needs: pull
-              env:
-                IMAGE_NAME: entrytracker
-                IMAGE_TAG: latest
-              steps:
-                - name: Download source
-                  uses: actions/download-artifact@v4
-                  with:
-                    name: src
-                    path: ./ci_src
+                  - name: Pack source (git archive)
+                    run: |
+                      git config --global --add safe.directory "$PWD"
+                      git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
 
-                - name: Extract source
-                  run: |
-                    tar -xzf ./ci_src/src.tar.gz -C .
-                    ls -la
+                  - name: Upload source artifact
+                    uses: actions/upload-artifact@v4
+                    with:
+                      name: src
+                      path: /tmp/src.tar.gz
 
-                - name: Docker build (latest)
-                  run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
+              build:
+                runs-on: ubuntu-latest
+                needs: pull
+                env:
+                  IMAGE_NAME: entrytracker
+                  IMAGE_TAG: latest
+                steps:
+                  - name: Download source
+                    uses: actions/download-artifact@v4
+                    with:
+                      name: src
+                      path: ./ci_src
 
-                - name: Save built image as artifact (tar)
-                  run: docker save $IMAGE_NAME:$IMAGE_TAG -o image_latest.tar
+                  - name: Extract source
+                    run: |
+                      tar -xzf ./ci_src/src.tar.gz -C .
+                      ls -la
 
-                - name: Upload image artifact
-                  uses: actions/upload-artifact@v4
-                  with:
-                    name: image_latest
-                    path: image_latest.tar
+                  - name: Docker build (latest)
+                    run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
-            unit_test:
-              runs-on: ubuntu-latest
-              needs: pull
-              steps:
-                - name: Download source
-                  uses: actions/download-artifact@v4
-                  with:
-                    name: src
-                    path: ./ci_src
+                  - name: Save built image as artifact (tar)
+                    run: docker save $IMAGE_NAME:$IMAGE_TAG -o image_latest.tar
 
-                - name: Extract source
-                  run: tar -xzf ./ci_src/src.tar.gz -C .
+                  - name: Upload image artifact
+                    uses: actions/upload-artifact@v4
+                    with:
+                      name: image_latest
+                      path: image_latest.tar
 
-                - name: Set up Python 3.10
-                  uses: actions/setup-python@v5
-                  with:
-                    python-version: '3.10'
+              unit_test:
+                runs-on: ubuntu-latest
+                needs: pull
+                steps:
+                  - name: Download source
+                    uses: actions/download-artifact@v4
+                    with:
+                      name: src
+                      path: ./ci_src
 
-                - name: Install deps (app + pytest)
-                  run: |
-                    pip install -r requirements.txt
-                    pip install pytest
+                  - name: Extract source
+                    run: tar -xzf ./ci_src/src.tar.gz -C .
 
-                - name: Run app standalone (background)
-                  run: |
-                    nohup python app.py > app.log 2>&1 & echo $! > app.pid
+                  - name: Set up Python 3.10
+                    uses: actions/setup-python@v5
+                    with:
+                      python-version: '3.10'
 
-                - name: Wait for app on :5000
-                  run: |
-                    for i in {1..30}; do
-                      if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
-                        echo "Standalone app is up"; exit 0; fi
-                      echo "Waiting for app... ($i)"; sleep 2
-                    done
-                    name: CI
+                  - name: Install deps (app + pytest)
+                    run: |
+                      pip install -r requirements.txt
+                      pip install pytest
 
-                    on:
-                      push:
-                        branches: [ main ]
-                      pull_request:
-                        branches: [ main ]
+                  - name: Run app standalone (background)
+                    run: |
+                      nohup python app.py > app.log 2>&1 & echo $! > app.pid
 
-                    jobs:
-                      pull:
-                        runs-on: ubuntu-latest
-                        outputs:
-                          src_sha: ${{ steps.meta.outputs.src_sha }}
-                        steps:
-                          - name: Checkout
-                            uses: actions/checkout@v4
+                  - name: Wait for app on :5000
+                    run: |
+                      for i in {1..30}; do
+                        if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
+                          echo "Standalone app is up"; exit 0; fi
+                        echo "Waiting for app... ($i)"; sleep 2
+                      done
+                      echo "App did not start in time" && exit 1
 
-                          - name: Fail if merge-conflict markers exist
-                            run: |
-                              if git grep -nE '^[<=>]{7}'; then
-                                echo "Resolve merge conflicts before running CI."
-                                exit 1
-                              fi
+                  - name: Pytest
+                    run: pytest -q
 
-                          - name: Stamp source SHA
-                            id: meta
-                            run: echo "src_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+                  - name: Stop standalone app
+                    if: always()
+                    run: |
+                      if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
 
-                          - name: Pack source (git archive)
-                            run: |
-                              git config --global --add safe.directory "$PWD"
-                              git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
+              package:
+                runs-on: ubuntu-latest
+                needs: [build]
+                steps:
+                  - name: Download image artifact (for traceability)
+                    uses: actions/download-artifact@v4
+                    with:
+                      name: image_latest
+                      path: ./img
 
-                          - name: Upload source artifact
-                            uses: actions/upload-artifact@v4
-                            with:
-                              name: src
-                              path: /tmp/src.tar.gz
+                  - name: List packaged image
+                    run: |
+                      ls -lh ./img
+                      echo "Package stage complete (image_latest.tar)"
 
-                      build:
-                        runs-on: ubuntu-latest
-                        needs: pull
-                        env:
-                          IMAGE_NAME: entrytracker
-                          IMAGE_TAG: latest
-                        steps:
-                          - name: Download source
-                            uses: actions/download-artifact@v4
-                            with:
-                              name: src
-                              path: ./ci_src
+              e2e:
+                runs-on: ubuntu-latest
+                needs: [pull, build, unit_test, package]
+                steps:
+                  - name: Download source
+                    uses: actions/download-artifact@v4
+                    with:
+                      name: src
+                      path: ./ci_src
 
-                          - name: Extract source
-                            run: |
-                              tar -xzf ./ci_src/src.tar.gz -C .
-                              ls -la
+                  - name: Extract source
+                    run: tar -xzf ./ci_src/src.tar.gz -C .
 
-                          - name: Docker build (latest)
-                            run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
+                  - name: Download built image
+                    uses: actions/download-artifact@v4
+                    with:
+                      name: image_latest
+                      path: ./img
 
-                          - name: Save built image as artifact (tar)
-                            run: docker save $IMAGE_NAME:$IMAGE_TAG -o image_latest.tar
+                  - name: Load local image
+                    run: docker load -i ./img/image_latest.tar
 
-                          - name: Upload image artifact
-                            uses: actions/upload-artifact@v4
-                            with:
-                              name: image_latest
-                              path: image_latest.tar
+                  - name: Sanity: ensure local tag exists
+                    run: docker images | grep -E '^entrytracker\\s+latest' || (echo "entrytracker:latest not loaded" && exit 1)
 
-                      unit_test:
-                        runs-on: ubuntu-latest
-                        needs: pull
-                        steps:
-                          - name: Download source
-                            uses: actions/download-artifact@v4
-                            with:
-                              name: src
-                              path: ./ci_src
+                  - name: Pull public base images (nginx/mysql)
+                    run: |
+                      docker pull nginx:1.27-alpine
+                      docker pull mysql:5.7
 
-                          - name: Extract source
-                            run: tar -xzf ./ci_src/src.tar.gz -C .
+                  - name: Create compose override for CI
+                    run: |
+                      cat > docker-compose.ci.override.yml <<'YML'
+            services:
+              web:
+                image: entrytracker:latest
+            YML
+                      echo "---- docker-compose.ci.override.yml ----"
+                      cat docker-compose.ci.override.yml
 
-                          - name: Set up Python 3.10
-                            uses: actions/setup-python@v5
-                            with:
-                              python-version: '3.10'
+                  - name: Compose up (no build, with override)
+                    env:
+                      COMPOSE_PROJECT_NAME: entrytracker
+                    run: docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml up -d
 
-                          - name: Install deps (app + pytest)
-                            run: |
-                              pip install -r requirements.txt
-                              pip install pytest
+                  - name: Wait for web via Nginx (HTTP 200)
+                    run: |
+                      for i in {1..30}; do
+                        if curl -fsS http://localhost/ >/dev/null; then
+                          echo "Web is up through Nginx"; exit 0; fi
+                        echo "Waiting for Nginx/web... ($i)"; sleep 3
+                      done
+                      echo "Service not responding in time" && exit 1
 
-                          - name: Run app standalone (background)
-                            run: |
-                              nohup python app.py > app.log 2>&1 & echo $! > app.pid
+                  - name: Basic E2E curl
+                    run: curl -i http://localhost/ | head -n 1
 
-                          - name: Wait for app on :5000
-                            run: |
-                              for i in {1..30}; do
-                                if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
-                                  echo "Standalone app is up"; exit 0; fi
-                                echo "Waiting for app... ($i)"; sleep 2
-                              done
-                              echo "App did not start in time" && exit 1
+                  - name: Compose down
+                    if: always()
+                    run: docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml down -v
 
-                          - name: Pytest
-                            run: pytest -q
+                  - name: Collect compose logs
+                    if: always()
+                    run: |
+                      mkdir -p reports
+                      docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml ps > reports/compose.ps.txt || true
+                      docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml logs --no-color > reports/compose.log || true
 
-                          - name: Stop standalone app
-                            if: always()
-                            run: |
-                              if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
+                  - name: Upload reports (artifact)
+                    if: always()
+                    uses: actions/upload-artifact@v4
+                    with:
+                      name: ci-reports
+                      path: reports/
 
-                      package:
-                        runs-on: ubuntu-latest
-                        needs: [build]
-                        steps:
-                          - name: Download image artifact (for traceability)
-                            uses: actions/download-artifact@v4
-                            with:
-                              name: image_latest
-                              path: ./img
+              report:
+                runs-on: ubuntu-latest
+                needs: [e2e]
+                steps:
+                  - name: Download CI reports
+                    uses: actions/download-artifact@v4
+                    with:
+                      name: ci-reports
+                      path: ./ci-reports
 
+                  - name: Summarize
+                    run: |
+                      echo "=== CI Reports ==="
+                      ls -lh ./ci-reports || true
                           - name: List packaged image
                             run: |
                               ls -lh ./img
