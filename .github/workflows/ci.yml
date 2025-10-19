@@ -4,62 +4,186 @@ on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
 
 jobs:
-  build_and_e2e:
+  build_pack:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ap-south-1
-
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
-      - name: Checkout
+      - name: Checkout (once)
         uses: actions/checkout@v4
 
-      # הגנה קטנה: מפיל את הריצה אם נשארו סימני merge conflict בקבצים (כמו שהיה ב-.env)
-      - name: Fail if merge conflict markers exist
-        run: |
-          if git grep -nE '^[<=>]{7}'; then
-            echo "Resolve merge conflicts before running CI."
-            exit 1
-          fi
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      # AWS creds ל-runner
-      - name: Configure AWS credentials
+      - name: Install deps (app + pytest)
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      # מרימים את האפליקציה כסטנדאלון
+      - name: Run app standalone in background
+        run: |
+          nohup python app.py > app.log 2>&1 &
+          echo $! > app.pid
+
+      - name: Wait for app (standalone) on 5000
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
+              echo "Standalone app is up"
+              exit 0
+            fi
+            echo "Waiting for standalone app... ($i)"
+            sleep 2
+          done
+          echo "Standalone app did not start in time" && exit 1
+
+      - name: Unit tests (pytest)
+        run: pytest -q
+
+      - name: Stop standalone app
+        if: always()
+        run: |
+          if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
+
+      - name: Compute image tag (SHA)
+        id: meta
+        run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Pack source as artifact (git archive)
+        run: |
+            git config --global --add safe.directory "$PWD"
+            git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: src
+          path: /tmp/src.tar.gz
+
+  # אריזת האפליקציה כתמונת Docker (tag: latest)
+  package_image:
+    runs-on: ubuntu-latest
+    needs: build_pack
+    env:
+      IMAGE_NAME: entrytracker
+      IMAGE_TAG: latest
+    steps:
+      - name: Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src
+          path: ./ci_src
+
+      - name: Extract source
+        run: |
+          tar -xzf ./ci_src/src.tar.gz -C .
+          ls -la
+
+      - name: Build Docker image (latest)
+        run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+      - name: Save image as artifact (tar)
+        run: docker save $IMAGE_NAME:$IMAGE_TAG -o image_latest.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image_latest
+          path: image_latest.tar
+
+  # E2E דרך docker-compose ונגישות דרך Nginx (פורט 80)
+  e2e:
+    runs-on: ubuntu-latest
+    needs: [build_pack, package_image]
+    env:
+      DB_NAME: app_db
+      DB_USER: appuser
+      DB_PASSWORD: testpass123
+      DB_ROOT_PASSWORD: rootpass123
+      DB_HOST: mysql
+    steps:
+      - name: Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src
+          path: ./ci_src
+
+      - name: Extract source
+        run: tar -xzf ./ci_src/src.tar.gz -C .
+
+      - name: Compose up (build)
+        run: docker compose up -d --build
+
+      - name: Wait for web via Nginx (HTTP 200)
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost/ >/dev/null; then
+              echo "Web is up through Nginx"
+              exit 0
+            fi
+            echo "Waiting for Nginx/web... ($i)"
+            sleep 3
+          done
+          echo "Service not responding in time" && exit 1
+
+      - name: Basic E2E curl
+        run: curl -i http://localhost/ | head -n 1
+
+      - name: Compose down
+        if: always()
+        run: docker compose down -v
+
+  # פרסום ל-ECR באמצעות OIDC
+  publish_ecr:
+    runs-on: ubuntu-latest
+    needs: [build_pack, package_image, e2e]   # ← הוספנו build_pack לכאן
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      IMAGE_NAME: entrytracker
+      IMAGE_TAG_SHA: ${{ needs.build_pack.outputs.image_tag }}   # עכשיו לא יהיה ריק
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: image_latest
+          path: ./img
+
+      - name: Load image (latest)
+        run: docker load -i ./img/image_latest.tar
+
+      - name: Configure AWS (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # לוגין לרג'יסטרי של ECR (נדרש כדי לדחוף ולמשוך את התמונה הפרטית)
-      - name: Login to Amazon ECR
+      - name: Login to ECR
+        id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # מביאים את ה-Account ID כדי לא לקבע מספרים בקוד (נוח גם ללוגים)
-      - name: Get AWS Account ID
-        id: sts
-        run: echo "AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
-
-      # Build & Push של התמונה לתג latest (כדי שה-E2E ירוצו על מה שבנינו עכשיו)
-      - name: Build & Push web image (:latest)
+      - name: Sanity print
         run: |
-          REG="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          IMAGE="${REG}/entrytracker:latest"
-          echo "Building ${IMAGE}"
-          docker build -t "${IMAGE}" .
-          docker push "${IMAGE}"
+          echo "ECR_REGISTRY=${{ steps.ecr.outputs.registry }}"
+          echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
+          echo "IMAGE_TAG_SHA=${IMAGE_TAG_SHA}"
 
-      # E2E: מושכים את ה-image הפרטי ומרימים את הסטאק (בלי --build)
-      - name: Run E2E with Docker Compose
+      - name: Tag and push (latest + SHA)
         env:
-          COMPOSE_PROJECT_NAME: entrytracker
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          # מושך מראש את ה-web (נח לקבל שגיאה מהירה אם אין הרשאות)
-          docker compose pull web
-          docker compose up -d      # שימי לב: בלי --build
-          # בריאות בסיסית (התאימי לצורך שלך):
-          # המתנה קצרה לעליית הקונטיינרים
-          sleep 10
-          # אפשר להחליף/להוסיף בדיקות Playwright/pytest וכו'
-          curl -f http://localhost/ || (docker compose ps && docker compose logs --no-color && exit 1)
-          docker compose down -v
+          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:latest
+          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
+          docker push $ECR_REGISTRY/${ECR_REPOSITORY}:latest
+          docker push $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
+
