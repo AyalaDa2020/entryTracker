@@ -7,64 +7,27 @@ on:
     branches: [ main ]
 
 jobs:
-  build_pack:
+  # ───────────────────────────── pull ─────────────────────────────
+  pull:
     runs-on: ubuntu-latest
     outputs:
-      image_tag: ${{ steps.meta.outputs.image_tag }}
+      src_sha: ${{ steps.meta.outputs.src_sha }}
     steps:
-      - name: Checkout (once)
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fail if merge conflict markers exist
+      - name: Fail if merge-conflict markers exist
         run: |
           if git grep -nE '^[<=>]{7}'; then
             echo "Resolve merge conflicts before running CI."
             exit 1
           fi
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install deps (app + pytest)
-        run: |
-          pip install -r requirements.txt
-          pip install pytest
-
-      # ── Build (standalone) + Unit tests ────────────────────────────────────────
-      - name: Run app standalone in background
-        run: |
-          nohup python app.py > app.log 2>&1 &
-          echo $! > app.pid
-
-      - name: Wait for app (standalone) on 5000
-        run: |
-          for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
-              echo "Standalone app is up"
-              exit 0
-            fi
-            echo "Waiting for standalone app... ($i)"
-            sleep 2
-          done
-          echo "Standalone app did not start in time" && exit 1
-
-      - name: Unit tests (pytest)
-        run: pytest -q
-
-      - name: Stop standalone app
-        if: always()
-        run: |
-          if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
-
-      # tag למחזור הנוכחי (משמש ב-CD; ב-CI נריץ על latest)
-      - name: Compute image tag (SHA)
+      - name: Stamp source SHA
         id: meta
-        run: echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+        run: echo "src_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-      # ── Package source (artifact) ──────────────────────────────────────────────
-      - name: Pack source as artifact (git archive)
+      - name: Pack source (git archive)
         run: |
           git config --global --add safe.directory "$PWD"
           git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
@@ -75,10 +38,10 @@ jobs:
           name: src
           path: /tmp/src.tar.gz
 
-  # ── Package image (Docker) ────────────────────────────────────────────────────
-  package_image:
+  # ───────────────────────────── build ────────────────────────────
+  build:
     runs-on: ubuntu-latest
-    needs: build_pack
+    needs: pull
     env:
       IMAGE_NAME: entrytracker
       IMAGE_TAG: latest
@@ -94,10 +57,10 @@ jobs:
           tar -xzf ./ci_src/src.tar.gz -C .
           ls -la
 
-      - name: Build Docker image (latest)
+      - name: Docker build (latest)
         run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
 
-      - name: Save image as artifact (tar)
+      - name: Save built image as artifact (tar)
         run: docker save $IMAGE_NAME:$IMAGE_TAG -o image_latest.tar
 
       - name: Upload image artifact
@@ -106,18 +69,79 @@ jobs:
           name: image_latest
           path: image_latest.tar
 
-  # ── E2E via docker-compose + Nginx on :80 ─────────────────────────────────────
+  # ─────────────────────────── unit test ──────────────────────────
+  unit_test:
+    runs-on: ubuntu-latest
+    needs: pull
+    steps:
+      - name: Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src
+          path: ./ci_src
+
+      - name: Extract source
+        run: tar -xzf ./ci_src/src.tar.gz -C .
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps (app + pytest)
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run app standalone (background)
+        run: |
+          nohup python app.py > app.log 2>&1 & echo $! > app.pid
+
+      - name: Wait for app on :5000
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
+              echo "Standalone app is up"; exit 0; fi
+            echo "Waiting for app... ($i)"; sleep 2
+          done
+          echo "App did not start in time" && exit 1
+
+      - name: Pytest
+        run: pytest -q
+
+      - name: Stop standalone app
+        if: always()
+        run: |
+          if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
+
+  # ───────────────────────────── package ──────────────────────────
+  package:
+    runs-on: ubuntu-latest
+    needs: [build]   # התוצר כבר נשמר כ־image_latest.tar ב־build
+    steps:
+      - name: Download image artifact (for traceability)
+        uses: actions/download-artifact@v4
+        with:
+          name: image_latest
+          path: ./img
+
+      - name: List packaged image
+        run: |
+          ls -lh ./img
+          echo "Package stage complete (image_latest.tar)"
+
+  # ───────────────────────────── e2e ──────────────────────────────
   e2e:
     runs-on: ubuntu-latest
-    needs: [build_pack, package_image]
+    needs: [pull, build, unit_test, package]
     env:
-      # ברירות מחדל לשירותי ה-DB וכד'
+      # ערכי ברירת מחדל לשירותים ב-compose
       DB_NAME: app_db
       DB_USER: appuser
       DB_PASSWORD: testpass123
       DB_ROOT_PASSWORD: rootpass123
       DB_HOST: mysql
-      # נעקוף את ה-.env ונריץ על האימג' המקומי שנבנה ב-job הקודם:
+      # NB: מריצים את ה-e2e על האימג' המקומי שנבנה ב-CI (לא ECR!)
       IMAGE_URI: entrytracker:latest
     steps:
       - name: Download source
@@ -133,18 +157,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: image_latest
-          path: ./img
+        path: ./img
 
-      - name: Load local image artifact
+      - name: Load local image
         run: docker load -i ./img/image_latest.tar
 
-      # "pull" לשכבות הציבוריות (nginx/mysql) — לא נוגע ב-ECR
-      - name: Pull public base images
+      - name: Pull public base images (nginx/mysql)
         run: |
           docker pull nginx:1.27-alpine
           docker pull mysql:5.7
 
-      - name: Compose up (no build, use local image)
+      - name: Compose up (no build)
         env:
           COMPOSE_PROJECT_NAME: entrytracker
         run: docker compose up -d
@@ -153,11 +176,8 @@ jobs:
         run: |
           for i in {1..30}; do
             if curl -fsS http://localhost/ >/dev/null; then
-              echo "Web is up through Nginx"
-              exit 0
-            fi
-            echo "Waiting for Nginx/web... ($i)"
-            sleep 3
+              echo "Web is up through Nginx"; exit 0; fi
+            echo "Waiting for Nginx/web... ($i)"; sleep 3
           done
           echo "Service not responding in time" && exit 1
 
@@ -168,7 +188,6 @@ jobs:
         if: always()
         run: docker compose down -v
 
-      # ── Report ────────────────────────────────────────────────────────────────
       - name: Collect compose logs
         if: always()
         run: |
@@ -176,9 +195,25 @@ jobs:
           docker compose ps > reports/compose.ps.txt || true
           docker compose logs --no-color > reports/compose.log || true
 
-      - name: Upload reports artifact
+      - name: Upload reports (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ci-reports
           path: reports/
+
+  # ───────────────────────────── report ───────────────────────────
+  report:
+    runs-on: ubuntu-latest
+    needs: [e2e]
+    steps:
+      - name: Download CI reports
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-reports
+          path: ./ci-reports
+
+      - name: Summarize
+        run: |
+          echo "=== CI Reports ==="
+          ls -lh ./ci-reports || true
