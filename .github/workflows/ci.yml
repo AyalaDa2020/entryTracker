@@ -140,7 +140,7 @@ jobs:
       DB_PASSWORD: testpass123
       DB_ROOT_PASSWORD: rootpass123
       DB_HOST: mysql
-      IMAGE_URI: entrytracker:latest   # מריצים על האימג' המקומי שנבנה ב-CI
+      IMAGE_URI: 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest   # מריצים על האימג' המקומי שנבנה ב-CI
     steps:
       - name: Download source
         uses: actions/download-artifact@v4
