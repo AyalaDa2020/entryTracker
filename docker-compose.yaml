@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   web:
-    build: .
+    image: ${IMAGE_URI}
     container_name: flask-app
     environment:
       - DB_HOST=${DB_HOST}
@@ -18,8 +18,10 @@ services:
     image: mysql:5.7
     container_name: mysql-db
     environment:
-      - MYSQL_ROOT_PASSWORD=${DB_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
       - MYSQL_DATABASE=${DB_NAME}
+      - MYSQL_USER=${DB_USER}
+      - MYSQL_PASSWORD=${DB_PASSWORD}
     networks:
       - app_network
     volumes:

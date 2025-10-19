@@ -1,0 +1,71 @@
+name: CD (staging)
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+env:
+  AWS_REGION:      ${{ vars.AWS_REGION }}       # למשל: ap-south-1
+  AWS_ACCOUNT_ID:  ${{ vars.AWS_ACCOUNT_ID }}   # 12 ספרות
+  ECR_REPOSITORY:  ${{ vars.ECR_REPOSITORY }}   # entrytracker
+
+jobs:
+  deploy_staging:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    concurrency: cd-staging
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          echo "${{ secrets.STAGING_SSH_KEY }}" > key.pem
+          chmod 600 key.pem
+
+      # אופציונלי: לסנכרן compose/nginx מהקוד אל השרת בכל דיפלוי
+      # - name: Rsync compose & nginx to EC2
+      #   env:
+      #     HOST: ${{ secrets.STAGING_HOST }}
+      #     USER: ${{ secrets.STAGING_USER }}
+      #   run: |
+      #     rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
+      #       docker-compose.yml nginx/ ${USER}@${HOST}:/opt/entrytracker/
+
+      - name: Deploy via SSH (pull & replace)
+        env:
+          HOST: ${{ secrets.STAGING_HOST }}   # DNS/IP של ה-EC2
+          USER: ${{ secrets.STAGING_USER }}   # ec2-user / ubuntu
+        run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} <<'EOF'
+            set -euo pipefail
+            cd /opt/entrytracker
+
+            # Login to ECR (נשען על Instance Role אם קיים)
+            aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+              | sudo docker login --username AWS --password-stdin \
+                "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+            # משיכת הגרסה החדשה והחלפת הקונטיינר הישן בחדש
+            sudo docker compose pull
+            sudo docker compose up -d
+
+            # ניקוי תמונות מיותרות (לא חובה)
+            sudo docker image prune -f || true
+
+            # לולאת בריאות דרך Nginx
+            for i in {1..20}; do
+              if curl -fsS http://localhost/ >/dev/null; then
+                echo "Deployed OK"
+                exit 0
+              fi
+              echo "Waiting for app... ($i)"
+              sleep 3
+            done
+            echo "Health check failed" >&2
+            exit 1
+          EOF
