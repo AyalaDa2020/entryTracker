@@ -15,6 +15,13 @@ jobs:
       - name: Checkout (once)
         uses: actions/checkout@v4
 
+      - name: Fail if merge conflict markers exist
+        run: |
+          if git grep -nE '^[<=>]{7}'; then
+            echo "Resolve merge conflicts before running CI."
+            exit 1
+          fi
+
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
@@ -25,7 +32,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
-      # מרימים את האפליקציה כסטנדאלון
+      # מרימים את האפליקציה כסטנדאלון (ברקע) כדי לוודא שעולה
       - name: Run app standalone in background
         run: |
           nohup python app.py > app.log 2>&1 &
@@ -57,8 +64,8 @@ jobs:
 
       - name: Pack source as artifact (git archive)
         run: |
-            git config --global --add safe.directory "$PWD"
-            git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
+          git config --global --add safe.directory "$PWD"
+          git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
 
       - name: Upload source artifact
         uses: actions/upload-artifact@v4
@@ -66,7 +73,6 @@ jobs:
           name: src
           path: /tmp/src.tar.gz
 
-  # אריזת האפליקציה כתמונת Docker (tag: latest)
   package_image:
     runs-on: ubuntu-latest
     needs: build_pack
@@ -97,16 +103,18 @@ jobs:
           name: image_latest
           path: image_latest.tar
 
-  # E2E דרך docker-compose ונגישות דרך Nginx (פורט 80)
   e2e:
     runs-on: ubuntu-latest
     needs: [build_pack, package_image]
     env:
+      # ערכי ברירת מחדל ל-compose (אפשר להשאיר כמו שהיו לך ב-CI)
       DB_NAME: app_db
       DB_USER: appuser
       DB_PASSWORD: testpass123
       DB_ROOT_PASSWORD: rootpass123
       DB_HOST: mysql
+      # חשוב: מריצים את הסטאק על האימג' המקומי שנבנה ב-job הקודם
+      IMAGE_URI: entrytracker:latest
     steps:
       - name: Download source
         uses: actions/download-artifact@v4
@@ -117,8 +125,24 @@ jobs:
       - name: Extract source
         run: tar -xzf ./ci_src/src.tar.gz -C .
 
-      - name: Compose up (build)
-        run: docker compose up -d --build
+      - name: Download built image
+        uses: actions/download-artifact@v4
+        with:
+          name: image_latest
+          path: ./img
+
+      - name: Load local image artifact
+        run: docker load -i ./img/image_latest.tar
+
+      # Pull לבסיסים הציבוריים (nginx/mysql) — שלב "pull" ב-CI
+      - name: Pull public base images
+        run: |
+          docker pull nginx:1.27-alpine
+          docker pull mysql:5.7
+
+      # מרימים את הקומפוז — בלי --build (אין build לשירות web)
+      - name: Compose up (no build)
+        run: docker compose up -d
 
       - name: Wait for web via Nginx (HTTP 200)
         run: |
@@ -129,7 +153,7 @@ jobs:
             fi
             echo "Waiting for Nginx/web... ($i)"
             sleep 3
-          done
+          end
           echo "Service not responding in time" && exit 1
 
       - name: Basic E2E curl
@@ -139,51 +163,16 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  # פרסום ל-ECR באמצעות OIDC
-  publish_ecr:
-    runs-on: ubuntu-latest
-    needs: [build_pack, package_image, e2e]   # ← הוספנו build_pack לכאן
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      id-token: write
-      contents: read
-    env:
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
-      IMAGE_NAME: entrytracker
-      IMAGE_TAG_SHA: ${{ needs.build_pack.outputs.image_tag }}   # עכשיו לא יהיה ריק
-    steps:
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: image_latest
-          path: ./img
-
-      - name: Load image (latest)
-        run: docker load -i ./img/image_latest.tar
-
-      - name: Configure AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_IAM_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Sanity print
+      - name: Upload docker-compose logs (report)
+        if: always()
         run: |
-          echo "ECR_REGISTRY=${{ steps.ecr.outputs.registry }}"
-          echo "ECR_REPOSITORY=${ECR_REPOSITORY}"
-          echo "IMAGE_TAG_SHA=${IMAGE_TAG_SHA}"
+          mkdir -p reports
+          docker compose logs --no-color > reports/compose.log || true
+        shell: bash
 
-      - name: Tag and push (latest + SHA)
-        env:
-          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
-        run: |
-          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:latest
-          docker tag $IMAGE_NAME:latest $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
-          docker push $ECR_REGISTRY/${ECR_REPOSITORY}:latest
-          docker push $ECR_REGISTRY/${ECR_REPOSITORY}:${IMAGE_TAG_SHA}
-
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-reports
+          path: reports/
