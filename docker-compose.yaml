@@ -1,6 +1,6 @@
 services:
   web:
-    image: ${IMAGE_URI}
+    image: 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
     container_name: flask-app
     environment:
       - DB_HOST=${DB_HOST}
