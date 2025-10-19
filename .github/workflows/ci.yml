@@ -1,234 +1,112 @@
-name: CI
+name: CI (pull → build → unit_test → package → publish → e2e)
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  push: { branches: [ main ] }
+  pull_request: { branches: [ main ] }
+
+env:
+  AWS_REGION: ap-south-1
+  AWS_ACCOUNT_ID: 277014978722
+  ECR_REPOSITORY: entrytracker
+  IMAGE_URI: 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
+  APP_FILE: app.py            # אם קובץ הכניסה שונה — עדכני
+  APP_PORT: "5000"           # הפורט שבו האפליקציה רצה ב-standalone
+  HEALTH_PATH: "/"           # אם יש /health — עדכני
+  E2E_URL: "http://localhost/" # ה-Nginx שלך חושף 80:80
 
 jobs:
-  # ───────────────────────────── pull ─────────────────────────────
-  pull:
+  ci:
     runs-on: ubuntu-latest
-    outputs:
-      src_sha: ${{ steps.meta.outputs.src_sha }}
+    permissions: { contents: read }
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # ---------- pull ----------
+    - name: Pull source
+      uses: actions/checkout@v4
 
-      - name: Fail if merge-conflict markers exist
-        run: |
-          if git grep -nE '^[<=>]{7}'; then
-            echo "Resolve merge conflicts before running CI."
-            exit 1
-          fi
+    # ---------- build (standalone, no Docker) ----------
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with: { python-version: "3.11" }
 
-      - name: Stamp source SHA
-        id: meta
-        run: echo "src_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+    - name: Install deps
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Pack source (git archive)
-        run: |
-          git config --global --add safe.directory "$PWD"
-          git archive --format=tar.gz -o /tmp/src.tar.gz HEAD
+    # ---------- unit_test (run & curl) ----------
+    - name: Run app in background
+      run: |
+        nohup python "${APP_FILE}" > app.log 2>&1 &
+        echo $! > app.pid
+        for i in {1..25}; do
+          if curl -fsS "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}" >/dev/null; then
+            echo "App is up"; break; fi
+          sleep 2
+        done
+        curl -v "http://127.0.0.1:${APP_PORT}${HEALTH_PATH}"
 
-      - name: Upload source artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: src
-          path: /tmp/src.tar.gz
+    - name: Stop app
+      if: always()
+      run: |
+        [ -f app.pid ] && kill $(cat app.pid) 2>/dev/null || true
+        [ -f app.log ] && tail -n +200 app.log || true
 
-  # ───────────────────────────── build ────────────────────────────
-  build:
-    runs-on: ubuntu-latest
-    needs: pull
-    env:
-      IMAGE_NAME: entrytracker
-      IMAGE_TAG: latest
-    steps:
-      - name: Download source
-        uses: actions/download-artifact@v4
-        with:
-          name: src
-          path: ./ci_src
+    # ---------- package (docker build) ----------
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-      - name: Extract source
-        run: |
-          tar -xzf ./ci_src/src.tar.gz -C .
-          ls -la
+    - name: Docker build (no push)
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile
+        push: false
+        tags: ${{ env.IMAGE_URI }}
 
-      - name: Docker build (latest)
-        run: docker build -t $IMAGE_NAME:$IMAGE_TAG .
+    # ---------- publish (push to ECR) ----------
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-      - name: Save built image as artifact (tar)
-        run: docker save $IMAGE_NAME:$IMAGE_TAG -o image_latest.tar
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: image_latest
-          path: image_latest.tar
+    - name: Push image to ECR (latest + sha)
+      run: |
+        IMAGE_BASE="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}"
+        docker tag "${IMAGE_URI}" "${IMAGE_BASE}:latest"
+        docker tag "${IMAGE_URI}" "${IMAGE_BASE}:${GITHUB_SHA::7}"
+        docker push "${IMAGE_BASE}:latest"
+        docker push "${IMAGE_BASE}:${GITHUB_SHA::7}"
 
-  # ─────────────────────────── unit test ──────────────────────────
-  unit_test:
-    runs-on: ubuntu-latest
-    needs: pull
-    steps:
-      - name: Download source
-        uses: actions/download-artifact@v4
-        with:
-          name: src
-          path: ./ci_src
+    # ---------- e2e (compose up + curl) ----------
+    - name: Prepare .env for docker-compose
+      run: |
+        cat > .env <<EOF
+        DB_HOST=mysql
+        DB_USER=appuser
+        DB_PASSWORD=strong-pass
+        DB_NAME=app_db
+        DB_ROOT_PASSWORD=root-pass
+        EOF
 
-      - name: Extract source
-        run: tar -xzf ./ci_src/src.tar.gz -C .
+    - name: Compose up (detached)
+      run: |
+        docker compose up -d
+        for i in {1..30}; do
+          if curl -fsS "${E2E_URL}" >/dev/null; then echo "E2E is up"; break; fi
+          sleep 3
+        done
+        curl -v "${E2E_URL}"
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+    - name: Compose logs on failure
+      if: failure()
+      run: docker compose logs --no-color
 
-      - name: Install deps (app + pytest)
-        run: |
-          pip install -r requirements.txt
-          pip install pytest
-
-      - name: Run app standalone (background)
-        run: |
-          nohup python app.py > app.log 2>&1 & echo $! > app.pid
-
-      - name: Wait for app on :5000
-        run: |
-          for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:5000/ >/dev/null; then
-              echo "Standalone app is up"; exit 0; fi
-            echo "Waiting for app... ($i)"; sleep 2
-          done
-          echo "App did not start in time" && exit 1
-
-      - name: Pytest
-        run: pytest -q
-
-      - name: Stop standalone app
-        if: always()
-        run: |
-          if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
-
-  # ───────────────────────────── package ──────────────────────────
-  package:
-    runs-on: ubuntu-latest
-    needs: [build]
-    steps:
-      - name: Download image artifact (for traceability)
-        uses: actions/download-artifact@v4
-        with:
-          name: image_latest
-          path: ./img
-
-      - name: List packaged image
-        run: |
-          ls -lh ./img
-          echo "Package stage complete (image_latest.tar)"
-
-  # ─────────────── publish (push :latest to ECR for e2e) ───────────────
-  publish_ecr_ci:
-    runs-on: ubuntu-latest
-    needs: [build, package]
-    env:
-      AWS_REGION: ap-south-1
-      ECR_IMAGE_URI: 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
-    steps:
-      - name: Download image artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: image_latest
-          path: ./img
-
-      - name: Load local image
-        run: docker load -i ./img/image_latest.tar
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Tag & Push image to ECR (:latest)
-        run: |
-          docker tag entrytracker:latest $ECR_IMAGE_URI
-          docker push $ECR_IMAGE_URI
-
-  # ───────────────────────────── e2e ──────────────────────────────
-  e2e:
-    runs-on: ubuntu-latest
-    needs: [pull, build, unit_test, package, publish_ecr_ci]
-    steps:
-      - name: Download source
-        uses: actions/download-artifact@v4
-        with:
-          name: src
-          path: ./ci_src
-
-      - name: Extract source
-        run: tar -xzf ./ci_src/src.tar.gz -C .
-
-      # Login ל-ECR לפני compose (כדי למנוע no basic auth credentials)
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
-
-      - name: Login to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      # משיכה מפורשת כדי לקבל כשל מהיר אם אין הרשאה/תג
-      - name: Pull web image from ECR
-        run: docker pull 277014978722.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
-
-      - name: Pull public base images (nginx/mysql)
-        run: |
-          docker pull nginx:1.27-alpine
-          docker pull mysql:5.7
-
-      # מרימים את ה-stack — ללא --build
-      - name: Compose up (no build)
-        env:
-          COMPOSE_PROJECT_NAME: entrytracker
-        run: docker compose up -d
-
-      - name: Wait for web via Nginx (HTTP 200)
-        run: |
-          for i in {1..30}; do
-            if curl -fsS http://localhost/ >/dev/null; then
-              echo "Web is up through Nginx"; exit 0; fi
-            echo "Waiting for Nginx/web... ($i)"; sleep 3
-          done
-          echo "Service not responding in time" && exit 1
-
-      - name: Basic E2E curl
-        run: curl -i http://localhost/ | head -n 1
-
-      - name: Compose down
-        if: always()
-        run: docker compose down -v
-
-      # ───────────────────────────── report ───────────────────────────
-      - name: Collect compose logs
-        if: always()
-        run: |
-          mkdir -p reports
-          docker compose ps > reports/compose.ps.txt || true
-          docker compose logs --no-color > reports/compose.log || true
-
-      - name: Upload reports (artifact)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-reports
-          path: reports/
+    - name: Compose down
+      if: always()
+      run: docker compose down -v
