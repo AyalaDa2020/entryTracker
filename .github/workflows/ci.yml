@@ -148,7 +148,7 @@ jobs:
       - name: Load local image
         run: docker load -i ./img/image_latest.tar
 
-      - name: Sanity: ensure local tag exists
+      - name: "Sanity: ensure local tag exists"
         run: docker images | grep -E '^entrytracker\s+latest' || (echo "entrytracker:latest not loaded" && exit 1)
 
       - name: Pull public base images (nginx/mysql)
