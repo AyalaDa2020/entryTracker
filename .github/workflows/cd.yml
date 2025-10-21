@@ -39,7 +39,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
             'sudo mkdir -p /opt/entrytracker/nginx && sudo chown -R $USER:$USER /opt/entrytracker'
 
-      # שימי לב: שם הקובץ הוא docker-compose.yaml
+      # שימי לב: שם הקובץ הוא docker-compose.yml
       - name: Rsync compose & nginx to EC2 (no .env)
         env:
           HOST: ${{ secrets.STAGING_HOST }}
@@ -47,7 +47,7 @@ jobs:
         run: |
           rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
             --delete \
-            docker-compose.yaml nginx/ ${USER}@${HOST}:/opt/entrytracker/
+            docker-compose.yml nginx/ ${USER}@${HOST}:/opt/entrytracker/
 
       - name: Deploy via SSH (pull & replace)
         env:
