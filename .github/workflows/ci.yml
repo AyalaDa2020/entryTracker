@@ -41,6 +41,11 @@ jobs:
           name: src
           path: /tmp/src.tar.gz
 
+      - name: Report (pull)
+        if: always()
+        run: |
+          echo "### ✅ pull passed" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     runs-on: ubuntu-latest
     needs: pull
@@ -70,6 +75,11 @@ jobs:
         with:
           name: image_latest
           path: image_latest.tar
+
+      - name: Report (build)
+        if: always()
+        run: |
+          echo "### ✅ build passed" >> "$GITHUB_STEP_SUMMARY"
 
   unit_test:
     runs-on: ubuntu-latest
@@ -115,6 +125,11 @@ jobs:
         run: |
           if [ -f app.pid ]; then kill $(cat app.pid) || true; fi
 
+      - name: Report (unit_test)
+        if: always()
+        run: |
+          echo "### ✅ unit_test passed" >> "$GITHUB_STEP_SUMMARY"
+
   package:
     runs-on: ubuntu-latest
     needs: [build]
@@ -129,6 +144,11 @@ jobs:
         run: |
           ls -lh ./img
           echo "Package stage complete (image_latest.tar)"
+          
+      - name: Report (package)
+        if: always()
+        run: |
+          echo "### ✅ package passed" >> "$GITHUB_STEP_SUMMARY"
 
   e2e:
     runs-on: ubuntu-latest
@@ -205,6 +225,12 @@ jobs:
           name: ci-reports
           path: reports/
 
+      - name: Report (e2e)
+        if: always()
+        run: |
+          echo "### ✅ e2e finished (see ci-reports artifact)" >> "$GITHUB_STEP_SUMMARY"
+
+
   publish:
     runs-on: ubuntu-latest
     needs: [e2e]   # נדחף רק אחרי שהאימג' נבנה ונבדק
@@ -253,3 +279,11 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: echo "PUBLISHED_IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Report (publish)
+        if: always()
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          echo "### ✅ publish pushed $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"
+
