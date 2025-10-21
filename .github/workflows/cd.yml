@@ -39,7 +39,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
             'sudo mkdir -p /opt/entrytracker/nginx && sudo chown -R $USER:$USER /opt/entrytracker'
 
-      # שימי לב: כאן מתקנים ל-yaml (לא yml)
+      # שימי לב: כאן מתקנים ל-yml (לא yml)
       - name: Rsync compose & nginx to EC2 (no .env)
         env:
           HOST: ${{ secrets.STAGING_HOST }}

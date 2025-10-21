@@ -144,7 +144,7 @@ jobs:
         run: |
           ls -lh ./img
           echo "Package stage complete (image_latest.tar)"
-          
+
       - name: Report (package)
         if: always()
         run: |
@@ -193,7 +193,7 @@ jobs:
       - name: Compose up (no build, with override)
         env:
           COMPOSE_PROJECT_NAME: entrytracker
-        run: docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml up -d
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.override.yml up -d
 
       - name: Wait for web via Nginx (HTTP 200)
         run: |
@@ -209,14 +209,14 @@ jobs:
 
       - name: Compose down
         if: always()
-        run: docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.override.yml down -v
 
       - name: Collect compose logs
         if: always()
         run: |
           mkdir -p reports
-          docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml ps > reports/compose.ps.txt || true
-          docker compose -f docker-compose.yaml -f docker-compose.ci.override.yml logs --no-color > reports/compose.log || true
+          docker compose -f docker-compose.yml -f docker-compose.ci.override.yml ps > reports/compose.ps.txt || true
+          docker compose -f docker-compose.yml -f docker-compose.ci.override.yml logs --no-color > reports/compose.log || true
 
       - name: Upload reports (artifact)
         if: always()
