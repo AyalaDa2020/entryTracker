@@ -1,0 +1,84 @@
+name: CD (staging)
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+env:
+  AWS_REGION:       ${{ vars.AWS_REGION }}        # למשל: ap-south-1
+  AWS_ACCOUNT_ID:   ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REPOSITORY:   ${{ vars.ECR_REPOSITORY }}    # למשל: entrytracker
+
+jobs:
+  deploy_staging:
+    # ירוץ ידנית, או אוטומטית רק אם CI הצליח ועל main
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    concurrency: cd-staging
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH key
+        run: |
+          echo "${{ secrets.STAGING_SSH_KEY }}" > key.pem
+          chmod 600 key.pem
+
+      - name: Prepare target dir on EC2
+        env:
+          HOST: ${{ secrets.STAGING_HOST }}
+          USER: ${{ secrets.STAGING_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
+            'sudo mkdir -p /opt/entrytracker/nginx && sudo chown -R $USER:$USER /opt/entrytracker'
+
+      # שימי לב: כאן מתקנים ל-yaml (לא yml)
+      - name: Rsync compose & nginx to EC2 (no .env)
+        env:
+          HOST: ${{ secrets.STAGING_HOST }}
+          USER: ${{ secrets.STAGING_USER }}
+        run: |
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
+            --delete \
+            docker-compose.yml nginx/ ${USER}@${HOST}:/opt/entrytracker/
+
+      - name: Deploy via SSH (pull & replace)
+        env:
+          HOST: ${{ secrets.STAGING_HOST }}  # DNS/IP של ה-EC2
+          USER: ${{ secrets.STAGING_USER }}  # ubuntu וכד'
+        run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} <<'EOF'
+          set -euo pipefail
+          cd /opt/entrytracker
+
+          # התחברות ל-ECR (נדרש IAM Role ל-EC2 או פרופיל AWS תקין על השרת)
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+            | sudo docker login --username AWS --password-stdin \
+              "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+          # משיכה של כל השירותים והחלפה (כולל ניקוי יתומים)
+          sudo docker compose pull
+          sudo docker compose up -d --remove-orphans
+
+          # ניקוי שכבות לא בשימוש (לא קריטי)
+          sudo docker image prune -f || true
+
+          # בדיקת בריאות דרך Nginx על פורט 80
+          for i in {1..20}; do
+            if curl -fsS http://localhost/ >/dev/null; then
+              echo "Deployed OK"
+              exit 0
+            fi
+            echo "Waiting for app... ($i)"
+            sleep 3
+          done
+          echo "Health check failed" >&2
+          exit 1
+          EOF
