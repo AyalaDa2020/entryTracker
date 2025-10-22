@@ -8,12 +8,12 @@ on:
 
 env:
   AWS_REGION:       ${{ vars.AWS_REGION }}        # למשל: ap-south-1
-  AWS_ACCOUNT_ID:   ${{ vars.ACCOUNT_ID }}
+  AWS_ACCOUNT_ID:   ${{ vars.AWS_ACCOUNT_ID }}
   ECR_REPOSITORY:   ${{ vars.ECR_REPOSITORY }}    # למשל: entrytracker
 
 jobs:
   deploy_staging:
-    # רץ ידנית, או אוטומטית רק אם ה-CI הצליח ועל main
+    # רץ ידנית, או אוטומטית רק אם CI הצליח ועל main
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
@@ -39,45 +39,61 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
             'sudo mkdir -p /opt/entrytracker/nginx && sudo chown -R $USER:$USER /opt/entrytracker'
 
-      # שימי לב: שם הקובץ הוא docker-compose.yml
-      - name: Rsync compose & nginx to EC2 (no .env)
+      # מעתיקים את docker-compose.yml בדיוק כפי ששמו ברפו
+      - name: Rsync compose to EC2
         env:
           HOST: ${{ secrets.STAGING_HOST }}
           USER: ${{ secrets.STAGING_USER }}
         run: |
+          test -f docker-compose.yml || { echo "❌ docker-compose.yml missing"; exit 1; }
           rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
-            --delete \
-            docker-compose.yml nginx/ ${USER}@${HOST}:/opt/entrytracker/
+            docker-compose.yml ${USER}@${HOST}:/opt/entrytracker/
+
+      # מעתיקים תמיד את nginx/ כולל nginx.conf למקום הנכון
+      - name: Rsync nginx/ to EC2
+        env:
+          HOST: ${{ secrets.STAGING_HOST }}
+          USER: ${{ secrets.STAGING_USER }}
+        run: |
+          test -f nginx/nginx.conf || { echo "❌ nginx/nginx.conf missing in repo"; exit 1; }
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
+            nginx/ ${USER}@${HOST}:/opt/entrytracker/nginx/
 
       - name: Deploy via SSH (pull & replace)
         env:
-          HOST: ${{ secrets.STAGING_HOST }}    # DNS/IP של ה-EC2
-          USER: ${{ secrets.STAGING_USER }}    # ubuntu וכד'
+          HOST: ${{ secrets.STAGING_HOST }}
+          USER: ${{ secrets.STAGING_USER }}
         run: |
-          # כאן ה-heredoc לא מצוטט, כדי שה-ENV מה-Workflow יוזרקו לתוך הסשן בשרת
+          # heredoc לא מצוטט כדי שה-ENV יוזרק פנימה
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} <<EOF
           set -euo pipefail
           cd /opt/entrytracker
 
-          # מקבלים את הערכים מה-Workflow ENV (כבר הוזרקו ע"י GitHub לפני השליחה)
           AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID}"
           AWS_REGION="${AWS_REGION}"
           ECR_REPOSITORY="${ECR_REPOSITORY}"
           REGISTRY="\${AWS_ACCOUNT_ID}.dkr.ecr.\${AWS_REGION}.amazonaws.com"
           export AWS_DEFAULT_REGION="\${AWS_REGION}"
 
-          echo "Using REGISTRY=\${REGISTRY}"
-          echo "Repository=\${ECR_REPOSITORY}"
+          echo "Using REGISTRY=\${REGISTRY} / REPO=\${ECR_REPOSITORY}"
+          echo "Compose file:"
+          ls -l /opt/entrytracker/docker-compose.yml || true
+          echo "Nginx conf:"
+          ls -l /opt/entrytracker/nginx/nginx.conf || true
 
-          # Login to ECR (נדרש IAM Role מתאים ל-EC2 או קרדנצ'יאלס תקינים על השרת)
+          # בדיקות קיום לפני ההרמה (כשל ידידותי)
+          [ -f /opt/entrytracker/docker-compose.yml ] || { echo "❌ missing docker-compose.yml"; exit 1; }
+          [ -f /opt/entrytracker/nginx/nginx.conf ]   || { echo "❌ missing nginx/nginx.conf"; exit 1; }
+
+          # Login ל-ECR (נדרש IAM Role מתאים ל-EC2 או קונפיגורציית AWS תקינה)
           aws ecr get-login-password --region "\${AWS_REGION}" \
             | sudo docker login --username AWS --password-stdin "\${REGISTRY}"
 
-          # מושכים את השירותים ומחליפים, כולל ניקוי יתומים
-          sudo docker compose pull
-          sudo docker compose up -d --remove-orphans
+          # Pull & replace (מנקה יתומים)
+          sudo docker compose -f docker-compose.yml pull
+          sudo docker compose -f docker-compose.yml up -d --remove-orphans
 
-          # ניקוי שכבות לא בשימוש (אופציונלי)
+          # ניקוי שכבות לא בשימוש (לא קריטי)
           sudo docker image prune -f || true
 
           # בדיקת בריאות דרך Nginx על פורט 80
