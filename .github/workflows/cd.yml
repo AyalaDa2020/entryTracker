@@ -8,7 +8,7 @@ on:
 
 env:
   AWS_REGION:       ${{ vars.AWS_REGION }}        # למשל: ap-south-1
-  AWS_ACCOUNT_ID:   ${{ vars.ACCOUNT_ID }}
+  AWS_ACCOUNT_ID:   ${{ vars.AWS_ACCOUNT_ID }}
   ECR_REPOSITORY:   ${{ vars.ECR_REPOSITORY }}    # למשל: entrytracker
 
 jobs:
@@ -39,7 +39,7 @@ jobs:
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
             'sudo mkdir -p /opt/entrytracker/nginx && sudo chown -R $USER:$USER /opt/entrytracker'
 
-      # מעתיקים את docker-compose.yml בדיוק כפי ששמו ברפו
+      # מעתיקים את compose וה-Nginx מהריפו (סיומת yml אצלך)
       - name: Rsync compose to EC2
         env:
           HOST: ${{ secrets.STAGING_HOST }}
@@ -49,7 +49,6 @@ jobs:
           rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
             docker-compose.yml ${USER}@${HOST}:/opt/entrytracker/
 
-      # מעתיקים תמיד את nginx/ כולל nginx.conf למקום הנכון
       - name: Rsync nginx/ to EC2
         env:
           HOST: ${{ secrets.STAGING_HOST }}
@@ -59,6 +58,7 @@ jobs:
           rsync -avz -e "ssh -o StrictHostKeyChecking=no -i key.pem" \
             nginx/ ${USER}@${HOST}:/opt/entrytracker/nginx/
 
+      # ─────────── Deploy: login to ECR → compose pull/up (בלי .env כרגע) ───────────
       - name: Deploy via SSH (pull & replace)
         env:
           HOST: ${{ secrets.STAGING_HOST }}
@@ -68,6 +68,7 @@ jobs:
           set -euo pipefail
           cd /opt/entrytracker
 
+          # ENV מה-Variables; אם חסר Account ID נגזור מה-STS
           AWS_REGION="\${AWS_REGION:-${AWS_REGION:-ap-south-1}}"
           AWS_ACCOUNT_ID="\${AWS_ACCOUNT_ID:-${AWS_ACCOUNT_ID:-}}"
           if [ -z "\$AWS_ACCOUNT_ID" ]; then
@@ -80,28 +81,38 @@ jobs:
           echo "Using ACCOUNT_ID=\$AWS_ACCOUNT_ID REGION=\$AWS_REGION"
           echo "Using REGISTRY=\$REGISTRY / REPO=\$ECR_REPOSITORY"
 
+          # וידוא קבצים לפני ההרמה
           [ -f /opt/entrytracker/docker-compose.yml ] || { echo "❌ missing docker-compose.yml"; exit 1; }
           [ -f /opt/entrytracker/nginx/nginx.conf ]   || { echo "❌ missing nginx/nginx.conf"; exit 1; }
 
+          # Login ל-ECR
           aws ecr get-login-password --region "\$AWS_REGION" \
             | sudo docker login --username AWS --password-stdin "\$REGISTRY"
 
+          # Pull & replace (ללא --env-file כרגע)
           sudo docker compose -f docker-compose.yml pull
           sudo docker compose -f docker-compose.yml up -d --remove-orphans
-          sudo docker image prune -f || true
 
-          # --- Health check מתוקן: יציאה מיידית עם 0 כשהכול תקין ---
-          for i in \$(seq 1 30); do
-            code=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)
-            if [ "\$code" = "200" ]; then
+          # ניקוי (לא חובה)
+          sudo docker image prune -f || true
+          EOF
+
+      # ─────────── Health-check נפרד כדי לשלוט נכון ב-exit code ───────────
+      - name: Remote Health Check (wait for HTTP 200)
+        env:
+          HOST: ${{ secrets.STAGING_HOST }}
+          USER: ${{ secrets.STAGING_USER }}
+        run: |
+          for i in $(seq 1 30); do
+            code=$(ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} "curl -s -o /dev/null -w '%{http_code}' http://localhost/")
+            if [ "$code" = "200" ]; then
               echo "Deployed OK (HTTP 200)"
               exit 0
             fi
-            echo "Waiting for app... (\$i) HTTP=\$code"
+            echo "Waiting for app... ($i) HTTP=$code"
             sleep 3
           done
           echo "Health check failed (no HTTP 200 after retries)"
-          # אופציונלי: הדפסת לוגים לעזרה בדיבוג
-          sudo docker compose -f docker-compose.yml logs --no-color | tail -n 200 || true
+          # דיבוג קצר:
+          ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} "cd /opt/entrytracker && sudo docker compose -f docker-compose.yml ps && sudo docker compose -f docker-compose.yml logs --no-color | tail -n 200" || true
           exit 1
-          EOF
