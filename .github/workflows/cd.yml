@@ -68,7 +68,6 @@ jobs:
           set -euo pipefail
           cd /opt/entrytracker
 
-          # ENV מה-Variables שלך; אם חסר Account ID נגזור מה-STS
           AWS_REGION="\${AWS_REGION:-${AWS_REGION:-ap-south-1}}"
           AWS_ACCOUNT_ID="\${AWS_ACCOUNT_ID:-${AWS_ACCOUNT_ID:-}}"
           if [ -z "\$AWS_ACCOUNT_ID" ]; then
@@ -81,34 +80,28 @@ jobs:
           echo "Using ACCOUNT_ID=\$AWS_ACCOUNT_ID REGION=\$AWS_REGION"
           echo "Using REGISTRY=\$REGISTRY / REPO=\$ECR_REPOSITORY"
 
-          # בדיקות קיום קבצים לפני ההרמה
           [ -f /opt/entrytracker/docker-compose.yml ] || { echo "❌ missing docker-compose.yml"; exit 1; }
           [ -f /opt/entrytracker/nginx/nginx.conf ]   || { echo "❌ missing nginx/nginx.conf"; exit 1; }
 
-          # Login ל-ECR
           aws ecr get-login-password --region "\$AWS_REGION" \
             | sudo docker login --username AWS --password-stdin "\$REGISTRY"
 
-          # Pull & replace
           sudo docker compose -f docker-compose.yml pull
           sudo docker compose -f docker-compose.yml up -d --remove-orphans
-
-          # ניקוי (לא חובה)
           sudo docker image prune -f || true
 
-          # ── Health check יציב: מודדים קוד HTTP, לא מפילים על 502 רגעי ──
-          set +e
-          ok=1
-          for i in {1..30}; do
+          # --- Health check מתוקן: יציאה מיידית עם 0 כשהכול תקין ---
+          for i in \$(seq 1 30); do
             code=\$(curl -s -o /dev/null -w '%{http_code}' http://localhost/)
             if [ "\$code" = "200" ]; then
               echo "Deployed OK (HTTP 200)"
-              ok=0
-              break
+              exit 0
             fi
             echo "Waiting for app... (\$i) HTTP=\$code"
             sleep 3
           done
-          set -e
-          exit \$ok
+          echo "Health check failed (no HTTP 200 after retries)"
+          # אופציונלי: הדפסת לוגים לעזרה בדיבוג
+          sudo docker compose -f docker-compose.yml logs --no-color | tail -n 200 || true
+          exit 1
           EOF
