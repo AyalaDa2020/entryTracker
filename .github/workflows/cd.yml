@@ -8,7 +8,7 @@ on:
 
 env:
   AWS_REGION:       ${{ vars.AWS_REGION }}        # למשל: ap-south-1
-  AWS_ACCOUNT_ID:   ${{ vars.AWS_ACCOUNT_ID }}
+  AWS_ACCOUNT_ID:   ${{ vars.ACCOUNT_ID }}
   ECR_REPOSITORY:   ${{ vars.ECR_REPOSITORY }}    # למשל: entrytracker
 
 jobs:
