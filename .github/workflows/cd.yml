@@ -89,6 +89,46 @@ jobs:
           aws ecr get-login-password --region "\$AWS_REGION" \
             | sudo docker login --username AWS --password-stdin "\$REGISTRY"
 
+                - name: Deploy via SSH (pull & replace)
+          env:
+          HOST: ${{ secrets.STAGING_HOST }}
+          USER: ${{ secrets.STAGING_USER }}
+          S3_ENV_PATH: s3://my-entrytracker-config/env/staging/.env   # הנתיב שלך ב-S3
+          run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} <<EOF
+            set -euo pipefail
+            cd /opt/entrytracker
+
+            echo "Downloading .env from S3..."
+            aws s3 cp ${S3_ENV_PATH} /opt/entrytracker/.env
+
+            echo "Logging in to ECR..."
+            aws ecr get-login-password --region "${{ env.AWS_REGION }}" \
+              | sudo docker login --username AWS --password-stdin \
+                "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+
+            echo "Pulling and deploying containers..."
+            sudo docker compose --env-file /opt/entrytracker/.env pull
+            sudo docker compose --env-file /opt/entrytracker/.env up -d
+
+            echo "Cleaning up old images..."
+            sudo docker image prune -f || true
+
+            echo "Running health check..."
+            for i in {1..20}; do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/)
+              if [ "$STATUS" = "200" ]; then
+                echo "✅ Deployed OK (HTTP 200)"
+                exit 0
+              fi
+              echo "Waiting for app... ($i) HTTP=$STATUS"
+              sleep 3
+            done
+
+            echo "❌ Health check failed" >&2
+            exit 1
+          EOF
+
           # Pull & replace (ללא --env-file כרגע)
           sudo docker compose -f docker-compose.yml pull
           sudo docker compose -f docker-compose.yml up -d --remove-orphans
