@@ -1,6 +1,6 @@
 services:
   web:
-    image: ${{ vars.ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPOSITORY }}:latest
+    image: ${vars.ACCOUNT_ID}.dkr.ecr.${vars.AWS_REGION}.amazonaws.com/${vars.ECR_REPOSITORY}:latest
     container_name: flask-app
     environment:
       - DB_HOST=${DB_HOST}
