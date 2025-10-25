@@ -10,7 +10,7 @@ env:
   AWS_REGION:       ${{ vars.AWS_REGION }}        # למשל: ap-south-1
   AWS_ACCOUNT_ID:   ${{ vars.ACCOUNT_ID }}
   ECR_REPOSITORY:   ${{ vars.ECR_REPOSITORY }}    # למשל: entrytracker
-
+  IMAGE_TAG: ${{ needs.pull.outputs.src_sha }}
 jobs:
   deploy_staging:
     # רץ ידנית, או אוטומטית רק אם CI הצליח ועל main
@@ -64,9 +64,10 @@ jobs:
           HOST: ${{ secrets.STAGING_HOST }}
           USER: ${{ secrets.STAGING_USER }}
           S3_ENV_PATH: s3://entry-tracker-task-dicd-s3/.env
-          ACCOUNT_ID: ${{ vars.ACCOUNT_ID }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID: ${{ vars.ACCOUNT_ID }}           # שימי לב לשם שה-compose מצפה לו
+          AWS_REGION:     ${{ vars.AWS_REGION }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG:      ${{ needs.pull.outputs.src_sha }}  # תג דינאמי (למשל SHA)
         run: |
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
             "AWS_REGION='${{ env.AWS_REGION }}' AWS_ACCOUNT_ID='${{ env.AWS_ACCOUNT_ID }}' ECR_REPOSITORY='${{ env.ECR_REPOSITORY }}' S3_ENV_PATH='${S3_ENV_PATH}' bash -s" <<'EOF'

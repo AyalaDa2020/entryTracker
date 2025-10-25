@@ -237,10 +237,10 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [e2e]   # נדחף רק אחרי שהאימג' נבנה ונבדק
+    needs: [e2e, pull]   # נדחף רק אחרי שהאימג' נבנה ונבדק
     env:
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}   # entrytracker אצלך
-      IMAGE_TAG: latest
+      IMAGE_TAG: ${{ needs.pull.outputs.src_sha }}
       AWS_REGION: ${{ vars.AWS_REGION }}           # ap-south-1 אצלך
     steps:
       - name: Download built image artifact
