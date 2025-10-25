@@ -192,7 +192,7 @@ jobs:
 
       - name: Compose up (no build, with override)
         env:
-          ACCOUNT_ID: ${{ vars.ACCOUNT_ID }}
+          AWS_ACCOUNT_ID: ${{ vars.ACCOUNT_ID }}
           AWS_REGION: ${{ vars.AWS_REGION }}
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
         run: |
