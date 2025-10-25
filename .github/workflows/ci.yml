@@ -192,8 +192,10 @@ jobs:
 
       - name: Compose up (no build, with override)
         env:
-          COMPOSE_PROJECT_NAME: entrytracker
-        run: ACCOUNT_ID=${{ vars.ACCOUNT_ID }} AWS_REGION=${{ vars.AWS_REGION }} ECR_REPOSITORY=${{ vars.ECR_REPOSITORY }} \
+          ACCOUNT_ID: ${{ vars.ACCOUNT_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+        run: |
              docker compose -f docker-compose.yml -f docker-compose.ci.override.yml up -d
     
 
