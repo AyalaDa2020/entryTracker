@@ -62,7 +62,7 @@ jobs:
       - name: Deploy via SSH (pull, env from S3, up)
         env:
           HOST: ${{ secrets.STAGING_HOST }}
-          USER: ${{ secrets.STAGING_USER }}
+          USER: ${{ secrets.STAGING_USER }} 
           S3_ENV_PATH: s3://entry-tracker-task-dicd-s3/env/staging/.env   # שנה לנתיב הנכון שלך
         run: |
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
