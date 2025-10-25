@@ -63,7 +63,7 @@ jobs:
         env:
           HOST: ${{ secrets.STAGING_HOST }}
           USER: ${{ secrets.STAGING_USER }}
-          S3_ENV_PATH: s3://my-entrytracker-config/env/staging/.env   # שנה לנתיב הנכון שלך
+          S3_ENV_PATH: s3://entry-tracker-task-dicd-s3/env/staging/.env   # שנה לנתיב הנכון שלך
         run: |
           ssh -o StrictHostKeyChecking=no -i key.pem ${USER}@${HOST} \
             "AWS_REGION='${{ env.AWS_REGION }}' AWS_ACCOUNT_ID='${{ env.AWS_ACCOUNT_ID }}' ECR_REPOSITORY='${{ env.ECR_REPOSITORY }}' S3_ENV_PATH='${S3_ENV_PATH}' bash -s" <<'EOF'
