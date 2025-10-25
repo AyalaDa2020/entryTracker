@@ -193,7 +193,11 @@ jobs:
       - name: Compose up (no build, with override)
         env:
           COMPOSE_PROJECT_NAME: entrytracker
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.override.yml up -d
+        run: ACCOUNT_ID=${{ vars.ACCOUNT_ID }} \
+              AWS_REGION=${{ vars.AWS_REGION }} \
+              ECR_REPOSITORY=${{ vars.ECR_REPOSITORY }} \
+              docker compose -f docker-compose.yml -f docker-compose.ci.override.yml up -d
+    
 
       - name: Wait for web via Nginx (HTTP 200)
         run: |
